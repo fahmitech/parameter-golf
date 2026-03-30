@@ -1,12 +1,11 @@
-# SOTA Mainline AR-GPTQ + XSA-all + BigramHash 3072x112 (SDPA)
+# SOTA Mainline AR-GPTQ + XSA-all + BigramHash 3072x112 (FA3)
 
 Runnable derivative scaffold of the March 25, 2026 public SOTA record:
 `2026-03-25_ValCalib_GPTQ_XSA_BigramHash3072`.
 
 This folder is meant to be a strong mainline for new experiments on RunPod. It keeps
-the March 25 trunk and export recipe, but swaps the hard `flash_attn_interface`
-dependency for the same PyTorch SDPA + GQA runtime path that already worked on our
-H100 smoke tests.
+the March 25 trunk and export recipe, including the direct
+`flash_attn_interface` / FlashAttention-3 runtime path.
 
 ## Status
 
@@ -26,13 +25,17 @@ H100 smoke tests.
 
 ## What Changed Here
 
-- attention now uses `torch.nn.functional.scaled_dot_product_attention(..., enable_gqa=...)`
-  instead of importing `flash_attn_interface`
 - defaults now match the March 25 winning recipe:
   - `BIGRAM_VOCAB_SIZE=3072`
   - `BIGRAM_DIM=112`
   - `WARMDOWN_ITERS=4000`
 - metadata is reset to pending so this folder does not claim the original record's scores
+
+## Requirements
+
+- `flash_attn_interface` / FlashAttention-3 available in the environment
+- `sentencepiece`
+- `zstandard`
 
 ## Suggested Full Run
 

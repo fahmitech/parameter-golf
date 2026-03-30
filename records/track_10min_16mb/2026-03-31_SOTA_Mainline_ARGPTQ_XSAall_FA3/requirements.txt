@@ -1,0 +1,3 @@
+# FlashAttention-3 / flash_attn_interface should be available in the runtime.
+sentencepiece
+zstandard

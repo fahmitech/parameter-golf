@@ -1,9 +1,0 @@
-{
-  "name": "SOTA Mainline AR-GPTQ + XSA-all + BigramHash 3072x112 (SDPA)",
-  "val_bpb": null,
-  "bytes_total": null,
-  "blurb": "Runnable derivative scaffold of the March 25, 2026 public SOTA stack. Keeps AR self-generated Full Hessian GPTQ calibration, XSA on all 11 layers, BigramHash(3072,112), selective +-1 pruning, Parallel Muon, and lzma preset=9, but uses the baseline-style PyTorch SDPA + GQA attention path instead of a hard flash_attn_interface dependency. Metrics pending verification.",
-  "author": "fahmitech",
-  "github_id": "fahmitech",
-  "date": "2026-03-31"
-}

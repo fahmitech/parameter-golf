@@ -163,6 +163,8 @@ For dataset export, tokenizer export, and docs-cache rebuild instructions, see [
 
 Evaluation will be in the RunPod environment with all packages installed. `requirements.txt` is provided as a reference if you want to self-setup.
 
+For a concrete multi-submission RunPod workflow covering the new `2026-03-29` record folders, see [RUNPOD_SUBMISSIONS.md](RUNPOD_SUBMISSIONS.md).
+
 ## FAQ
 
 **What exactly counts toward the 16MB artifact size?**

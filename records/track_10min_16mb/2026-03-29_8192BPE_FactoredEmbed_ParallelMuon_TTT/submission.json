@@ -1,0 +1,9 @@
+{
+  "name": "8192 BPE + Factored Tied Embedding + Parallel Muon + Legal TTT",
+  "val_bpb": null,
+  "bytes_total": null,
+  "blurb": "Submission scaffold built on the 2026-03-23 Parallel Muon + legal score-first TTT stack, with the A1 ablation implemented: switch to sp8192 plus factored tied embeddings (EMBED_DIM=254). Metrics pending first measured run.",
+  "author": "TBD",
+  "github_id": "TBD",
+  "date": "2026-03-29"
+}

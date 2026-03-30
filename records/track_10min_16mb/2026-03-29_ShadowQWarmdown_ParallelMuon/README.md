@@ -10,6 +10,14 @@ This variant does not copy the later self-generated GPTQ submission. Its main ch
 
 The intent is to reduce the train/export mismatch on the exact banked tensors that dominate the final int6 artifact, without copying the competitor GPTQ recipe.
 
+The current recommended trunk defaults have also been moved closer to the strongest public
+`sp1024` recipe:
+
+- `XSA_LAST_N=11`
+- `BIGRAM_VOCAB_SIZE=3072`
+- `BIGRAM_DIM=112`
+- `lzma preset=9` for final export
+
 ## Status
 
 - `val_bpb`: pending
@@ -30,7 +38,7 @@ Those banks are fake-quantized only during late warmdown, then averaged through 
 ## Suggested Run Command
 
 ```bash
-NUM_LAYERS=11 BIGRAM_VOCAB_SIZE=1536 XSA_LAST_N=4 \
+NUM_LAYERS=11 BIGRAM_VOCAB_SIZE=3072 BIGRAM_DIM=112 XSA_LAST_N=11 \
 ROPE_DIMS=16 LN_SCALE=1 VE_ENABLED=1 VE_DIM=128 VE_LAYERS=9,10 \
 TTT_ENABLED=1 TTT_LR=0.002 TTT_EPOCHS=3 TTT_CHUNK_TOKENS=32768 \
 TTT_FREEZE_BLOCKS=0 TTT_MOMENTUM=0.9 TTT_BATCH_SEQS=32 TTT_GRAD_CLIP=1.0 \

@@ -1,0 +1,9 @@
+{
+  "name": "Moonshot Recurrent-Factored Mainline (FA3)",
+  "val_bpb": null,
+  "bytes_total": null,
+  "blurb": "Runnable moonshot scaffold that replaces the 11-block trunk with a shared-depth recurrent transformer: 5 unique blocks, 3 recurrent loops, factorized tied embeddings, BigramHash(3072,112), XSA on all unique blocks, Parallel Muon, and the existing mixed int6 export path. Defaults target the runnable sp1024 path first; metrics pending verification.",
+  "author": "fahmitech",
+  "github_id": "fahmitech",
+  "date": "2026-03-31"
+}

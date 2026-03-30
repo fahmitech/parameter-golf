@@ -2,7 +2,7 @@
   "name": "Online Best-Agree Mainline (FA3)",
   "val_bpb": null,
   "bytes_total": null,
-  "blurb": "Runnable derivative scaffold of the current strongest open-PR line: Loader + Full GPTQ + XSA-all plus the causal online token/within-word/word-start agreement overlay packaged in the record folder. Keeps the native online ngram helper and FA3 runtime path. Metrics pending verification on this fork.",
+  "blurb": "Runnable derivative scaffold of the current strongest open-PR line: Loader + Full GPTQ + XSA-all plus a causal online token/within-word/word-start agreement overlay packaged in the record folder. The overlay now chooses tokens by aggregated expected gain across agreeing experts and only fires when the estimated gain is positive. Keeps the native online ngram helper and FA3 runtime path. Metrics pending verification on this fork.",
   "author": "fahmitech",
   "github_id": "fahmitech",
   "date": "2026-03-31"

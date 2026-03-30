@@ -96,57 +96,55 @@ def compute_best_agreement_chunk(
     word_tau: float,
     word_boost: float,
     agree_add_boost: float,
+    min_expected_gain: float,
 ) -> np.ndarray:
-    token_hit = token_top_token == true_targets
     token_gate = token_top_prob >= token_threshold
     token_exp_gain = expected_gain(token_top_prob, token_hint_probs, token_boost)
 
-    within_hit = within_top_token == true_targets
     within_gate = within_valid & (within_top_prob >= within_tau)
     within_exp_gain = expected_gain(within_top_prob, within_hint_probs, within_boost)
 
-    word_hit = word_top_token == true_targets
     word_gate = word_top_prob >= word_tau
     word_exp_gain = expected_gain(word_top_prob, word_hint_probs, word_boost)
 
-    within_pick = within_gate & (~token_gate | (within_exp_gain > token_exp_gain))
-    token_pick_tw = token_gate & ~within_pick
-    tw_gate = token_pick_tw | within_pick
+    candidate_tokens = np.stack(
+        (token_top_token, within_top_token, word_top_token),
+        axis=0,
+    )
+    candidate_hint_probs = np.stack(
+        (token_hint_probs, within_hint_probs, word_hint_probs),
+        axis=0,
+    ).astype(np.float64, copy=False)
 
-    word_pick = word_gate & ((~tw_gate) | (token_pick_tw & (word_exp_gain > token_exp_gain)) | (within_pick & (word_exp_gain > within_exp_gain)))
-    token_pick = token_pick_tw & ~word_pick
-    within_pick_final = within_pick & ~word_pick
-    chosen_gate = token_pick | within_pick_final | word_pick
+    candidate_scores = np.zeros((3, llm_chunk.shape[0]), dtype=np.float32)
+    candidate_counts = np.zeros((3, llm_chunk.shape[0]), dtype=np.uint8)
+    candidate_base_boost = np.zeros((3, llm_chunk.shape[0]), dtype=np.float32)
 
-    chosen_hint_probs = np.zeros(llm_chunk.shape, dtype=np.float64)
-    chosen_hint_probs[token_pick] = token_hint_probs[token_pick]
-    chosen_hint_probs[within_pick_final] = within_hint_probs[within_pick_final]
-    chosen_hint_probs[word_pick] = word_hint_probs[word_pick]
+    token_support = token_gate[None, :] & (candidate_tokens == token_top_token[None, :])
+    candidate_scores += np.where(token_support, token_exp_gain[None, :], 0.0)
+    candidate_counts += token_support.astype(np.uint8)
+    candidate_base_boost = np.maximum(candidate_base_boost, np.where(token_support, token_boost, 0.0))
 
-    chosen_hit = np.zeros(llm_chunk.shape, dtype=np.bool_)
-    chosen_hit[token_pick] = token_hit[token_pick]
-    chosen_hit[within_pick_final] = within_hit[within_pick_final]
-    chosen_hit[word_pick] = word_hit[word_pick]
+    within_support = within_gate[None, :] & (candidate_tokens == within_top_token[None, :])
+    candidate_scores += np.where(within_support, within_exp_gain[None, :], 0.0)
+    candidate_counts += within_support.astype(np.uint8)
+    candidate_base_boost = np.maximum(candidate_base_boost, np.where(within_support, within_boost, 0.0))
 
-    chosen_boost = np.zeros(llm_chunk.shape, dtype=np.float64)
-    chosen_boost[token_pick] = token_boost
-    chosen_boost[within_pick_final] = within_boost
-    chosen_boost[word_pick] = word_boost
+    word_support = word_gate[None, :] & (candidate_tokens == word_top_token[None, :])
+    candidate_scores += np.where(word_support, word_exp_gain[None, :], 0.0)
+    candidate_counts += word_support.astype(np.uint8)
+    candidate_base_boost = np.maximum(candidate_base_boost, np.where(word_support, word_boost, 0.0))
 
-    selected_token = np.zeros(llm_chunk.shape, dtype=np.uint16)
-    selected_token[token_pick] = token_top_token[token_pick]
-    selected_token[within_pick_final] = within_top_token[within_pick_final]
-    selected_token[word_pick] = word_top_token[word_pick]
-
-    agree_count = np.zeros(llm_chunk.shape, dtype=np.uint8)
-    agree_count += (token_gate & (token_top_token == selected_token)).astype(np.uint8)
-    agree_count += (within_gate & (within_top_token == selected_token)).astype(np.uint8)
-    agree_count += (word_gate & (word_top_token == selected_token)).astype(np.uint8)
-    agree_any = chosen_gate & (agree_count >= 2)
-
-    agree_boost = chosen_boost.copy()
-    agree_boost[agree_any] += agree_add_boost
-    return apply_boost(llm_chunk, chosen_hint_probs, chosen_hit, chosen_gate, agree_boost)
+    chosen_idx = np.argmax(candidate_scores, axis=0)
+    cols = np.arange(llm_chunk.shape[0])
+    chosen_scores = candidate_scores[chosen_idx, cols]
+    chosen_counts = candidate_counts[chosen_idx, cols]
+    chosen_gate = (chosen_counts > 0) & (chosen_scores > min_expected_gain)
+    chosen_hint_probs = candidate_hint_probs[chosen_idx, cols]
+    chosen_hit = candidate_tokens[chosen_idx, cols] == true_targets
+    chosen_boost = candidate_base_boost[chosen_idx, cols].astype(np.float64, copy=False)
+    chosen_boost += agree_add_boost * np.maximum(chosen_counts.astype(np.int16) - 1, 0)
+    return apply_boost(llm_chunk, chosen_hint_probs, chosen_hit, chosen_gate, chosen_boost)
 
 
 def dist_max_float(value: float, device: torch.device, world_size: int) -> float:
@@ -445,6 +443,7 @@ def eval_val_sliding_online_best_agree(
     word_tau = float(os.environ.get("WORD_TAU", "0.650"))
     word_boost = float(os.environ.get("WORD_BOOST", "0.750"))
     agree_add_boost = float(os.environ.get("AGREE_ADD_BOOST", "0.500"))
+    min_expected_gain = float(os.environ.get("MIN_EXPECTED_GAIN", "0.0"))
 
     total_targets = val_tokens.numel() - 1
     tokens_np = val_tokens.cpu().numpy().astype(np.uint16, copy=False)
@@ -610,6 +609,7 @@ def eval_val_sliding_online_best_agree(
                             word_tau=word_tau,
                             word_boost=word_boost,
                             agree_add_boost=agree_add_boost,
+                            min_expected_gain=min_expected_gain,
                         )
                         llm_loss_sum += float((-np.log(np.clip(llm_chunk, 1e-12, 1.0))).sum())
                         best_agree_loss_sum += float((-np.log(np.clip(best_agree_chunk, 1e-12, 1.0))).sum())

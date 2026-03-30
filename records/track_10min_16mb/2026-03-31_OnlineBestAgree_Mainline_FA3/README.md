@@ -41,9 +41,11 @@ prefix:
 - within-word continuation hints
 - word-start first-token hints
 
-At each scored position it selects at most one hinted token, optionally adds a small
-agreement bonus when multiple experts support the same token, and applies a single-token
-boost inside the model's already-normalized distribution.
+At each scored position it now aggregates evidence per candidate token, not just per
+expert. If multiple experts support the same token, their expected gains are summed and
+the resulting token gets a larger boost. The overlay only fires when the estimated gain
+is positive, then applies a single-token boost inside the model's already-normalized
+distribution.
 
 ## Suggested 1x H100 Sanity Run
 

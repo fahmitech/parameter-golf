@@ -1,0 +1,3 @@
+# This derivative uses PyTorch SDPA for attention instead of a hard FlashAttention-3 import.
+sentencepiece
+zstandard

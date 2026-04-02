@@ -52,6 +52,7 @@ class Hyperparameters:
     mlp_leaky_slope = float(os.environ.get("MLP_LEAKY_SLOPE", 0.5))
     asqu_beta_init = float(os.environ.get("ASQU_BETA_INIT", 0.25))
     asqu_lr = float(os.environ.get("ASQU_LR", 0.001))
+    asqu_sigmoid_beta = bool(int(os.environ.get("ASQU_SIGMOID_BETA", "0")))
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
@@ -264,6 +265,14 @@ INT8_KEEP_FLOAT_STORE_DTYPE = torch.float16
 INT8_PER_ROW_SCALE_DTYPE = torch.float16
 INT8_CLIP_PERCENTILE = 99.99984
 INT8_CLIP_Q = INT8_CLIP_PERCENTILE / 100.0
+INT6_CLIP_PERCENTILES = tuple(
+    float(pct)
+    for pct in os.environ.get(
+        "INT6_CLIP_PERCENTILES",
+        "0.9980,0.9985,0.9990,0.9993,0.9995,0.9997,0.9999,0.99995,0.99999,1.0",
+    ).split(",")
+    if pct
+)
 def tensor_nbytes(t: Tensor) -> int:
     return int(t.numel()) * int(t.element_size())
 def keep_float_tensor(name: str, t: Tensor, passthrough_orig_dtypes: dict[str, str]) -> Tensor:
@@ -580,12 +589,23 @@ class ValueEmbedding(nn.Module):
             h = self.proj(h)
         return h * self.scale.to(dtype=h.dtype)
 class ASQU(nn.Module):
-    def __init__(self, dim: int, beta_init: float = 0.25):
+    def __init__(self, dim: int, beta_init: float = 0.25, sigmoid_beta: bool = False):
         super().__init__()
+        self.sigmoid_beta = sigmoid_beta
+        if self.sigmoid_beta:
+            if not 0.0 < beta_init < 1.0:
+                raise ValueError(
+                    f"ASQU_BETA_INIT must be in (0, 1) when ASQU_SIGMOID_BETA=1, got {beta_init}"
+                )
+            beta_init = math.log(beta_init / (1.0 - beta_init))
         self.beta = nn.Parameter(torch.full((dim,), beta_init, dtype=torch.float32))
+    def effective_beta(self, dtype: torch.dtype | None = None) -> Tensor:
+        beta = torch.sigmoid(self.beta) if self.sigmoid_beta else self.beta
+        return beta.to(dtype=dtype) if dtype is not None else beta
     def forward(self, x: Tensor) -> Tensor:
+        beta = self.effective_beta(dtype=x.dtype)
         x_sq = x.square()
-        return torch.where(x > 0, x_sq, x_sq * self.beta.to(dtype=x.dtype))
+        return torch.where(x > 0, x_sq, x_sq * beta)
 class MLP(nn.Module):
     def __init__(
         self,
@@ -594,6 +614,7 @@ class MLP(nn.Module):
         activation: str = "relu2",
         leaky_slope: float = 0.5,
         asqu_beta_init: float = 0.25,
+        asqu_sigmoid_beta: bool = False,
     ):
         super().__init__()
         hidden = int(mlp_mult * dim)
@@ -602,7 +623,10 @@ class MLP(nn.Module):
         self.proj._zero_init = True
         self.activation = activation
         self.leaky_slope = leaky_slope
-        self.asqu = ASQU(hidden, beta_init=asqu_beta_init) if activation == "asqu" else None
+        self.asqu = (
+            ASQU(hidden, beta_init=asqu_beta_init, sigmoid_beta=asqu_sigmoid_beta)
+            if activation == "asqu" else None
+        )
     def forward(self, x: Tensor) -> Tensor:
         x = self.fc(x)
         if self.activation == "relu2":
@@ -629,6 +653,7 @@ class Block(nn.Module):
         mlp_activation: str = "relu2",
         mlp_leaky_slope: float = 0.5,
         asqu_beta_init: float = 0.25,
+        asqu_sigmoid_beta: bool = False,
         layer_idx: int = 0,
         ln_scale: bool = False,
         dtg: bool = False,
@@ -643,6 +668,7 @@ class Block(nn.Module):
             activation=mlp_activation,
             leaky_slope=mlp_leaky_slope,
             asqu_beta_init=asqu_beta_init,
+            asqu_sigmoid_beta=asqu_sigmoid_beta,
         )
         self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
@@ -689,6 +715,7 @@ class GPT(nn.Module):
         mlp_activation: str = "relu2",
         mlp_leaky_slope: float = 0.5,
         asqu_beta_init: float = 0.25,
+        asqu_sigmoid_beta: bool = False,
         ve_enabled: bool = False,
         ve_dim: int = 128,
         ve_layers: str = "9,10",
@@ -721,6 +748,7 @@ class GPT(nn.Module):
                     mlp_activation=mlp_activation,
                     mlp_leaky_slope=mlp_leaky_slope,
                     asqu_beta_init=asqu_beta_init,
+                    asqu_sigmoid_beta=asqu_sigmoid_beta,
                     layer_idx=i,
                     ln_scale=ln_scale,
                     dtg=dtg,
@@ -929,11 +957,24 @@ def _classify_param(name: str) -> str:
     if ".attn." in name or (".proj." in name and ".mlp." not in name):
         return "attn"
     return "other"
+def log_asqu_beta_diagnostics(model: GPT, log_fn) -> None:
+    for i, block in enumerate(model.blocks):
+        asqu = getattr(block.mlp, "asqu", None)
+        if asqu is None:
+            continue
+        beta = asqu.effective_beta().detach().float().cpu()
+        log_fn(
+            f"asqu_diag layer:{i} "
+            f"beta_mean:{beta.mean().item():.4f} beta_std:{beta.std().item():.4f} "
+            f"beta_min:{beta.min().item():.4f} beta_max:{beta.max().item():.4f} "
+            f"frac_near_zero:{(beta.abs() < 0.01).float().mean().item():.4f} "
+            f"frac_gt_half:{(beta > 0.5).float().mean().item():.4f}"
+        )
 def quantize_int6_per_row(t: Tensor, clip_range: int = 31) -> tuple[Tensor, Tensor]:
     t32 = t.float()
     if t32.ndim == 2:
         best_q, best_s, best_err = None, None, float('inf')
-        for pct in [0.9990, 0.9995, 0.9999, 0.99999, 1.0]:
+        for pct in INT6_CLIP_PERCENTILES:
             if pct < 1.0:
                 row_clip = torch.quantile(t32.abs(), pct, dim=1)
             else:
@@ -949,7 +990,7 @@ def quantize_int6_per_row(t: Tensor, clip_range: int = 31) -> tuple[Tensor, Tens
     scale = torch.tensor(amax / clip_range if amax > 0 else 1.0, dtype=torch.float16)
     q = torch.clamp(torch.round(t32 / scale.float()), -clip_range, clip_range).to(torch.int8)
     return q, scale
-def mixed_quantize_int6(state_dict: dict[str, Tensor], int6_cats: set[str]):
+def mixed_quantize_int6(state_dict: dict[str, Tensor], int6_cats: set[str], log_fn=None):
     num_layers_total = max(
         (int(k.split(".")[1]) for k in state_dict if k.startswith("blocks.")),
         default=0,
@@ -970,6 +1011,13 @@ def mixed_quantize_int6(state_dict: dict[str, Tensor], int6_cats: set[str]):
             continue
         if cat in int6_cats and t.ndim >= 1:
             q, s = quantize_int6_per_row(t)
+            if log_fn is not None and ".mlp." in name:
+                if s.ndim > 0:
+                    recon = q.float() * s.float().view(q.shape[0], *([1] * (q.ndim - 1)))
+                else:
+                    recon = q.float() * float(s.item())
+                mse = (t.float() - recon).pow(2).mean().item()
+                log_fn(f"quant_diag {name} int6_mse:{mse:.8f} shape:{list(t.shape)}")
             result[name + ".q"] = q
             result[name + ".scale"] = s
             meta[name] = {"type": "int6"}
@@ -1106,6 +1154,7 @@ def main() -> None:
         mlp_activation=args.mlp_activation,
         mlp_leaky_slope=args.mlp_leaky_slope,
         asqu_beta_init=args.asqu_beta_init,
+        asqu_sigmoid_beta=args.asqu_sigmoid_beta,
         ve_enabled=args.ve_enabled,
         ve_dim=args.ve_dim,
         ve_layers=args.ve_layers,
@@ -1200,8 +1249,14 @@ def main() -> None:
     )
     log0(
         f"mlp_activation:{args.mlp_activation} mlp_leaky_slope:{args.mlp_leaky_slope} "
-        f"asqu_beta_init:{args.asqu_beta_init} asqu_lr:{args.asqu_lr}"
+        f"asqu_beta_init:{args.asqu_beta_init} asqu_lr:{args.asqu_lr} "
+        f"asqu_sigmoid_beta:{args.asqu_sigmoid_beta}"
     )
+    log0(
+        f"late_qat_threshold:{args.late_qat_threshold} "
+        f"ve_enabled:{args.ve_enabled} ve_layers:{args.ve_layers}"
+    )
+    log0(f"int6_clip_percentiles:{list(INT6_CLIP_PERCENTILES)}")
     log0(
         f"train_batch_tokens:{args.train_batch_tokens} train_seq_len:{args.train_seq_len} "
         f"iterations:{args.iterations} warmup_steps:{args.warmup_steps} "
@@ -1251,7 +1306,8 @@ def main() -> None:
     swa_state: dict[str, Tensor] | None = None
     swa_count = 0
     ema_state = {name: t.detach().float().clone() for name, t in base_model.state_dict().items()}
-    ema_decay = 0.997
+    ema_decay_min = 0.99
+    ema_decay_max = 0.999
     training_time_ms = 0.0
     stop_after_step: int | None = None
     torch.cuda.synchronize()
@@ -1316,7 +1372,8 @@ def main() -> None:
         for opt in optimizers:
             opt.step()
         zero_grad_all()
-        # EMA update
+        # Adaptive EMA: tight tracking early (0.99), more averaging late (0.999)
+        ema_decay = ema_decay_min + (ema_decay_max - ema_decay_min) * min(step / max(args.iterations, 1), 1.0)
         with torch.no_grad():
             for name, t in base_model.state_dict().items():
                 ema_state[name].mul_(ema_decay).add_(t.detach().float(), alpha=1.0 - ema_decay)
@@ -1351,22 +1408,78 @@ def main() -> None:
         f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
         f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB"
     )
-    # Apply EMA weights (better than SWA alone per PR#401)
+    # Save final (non-averaged) weights for comparison
+    final_state = {name: t.detach().cpu().clone() for name, t in base_model.state_dict().items()}
+    # Evaluate EMA
     log0("ema:applying EMA weights")
     current_state = base_model.state_dict()
     avg_state = {name: t.to(dtype=current_state[name].dtype) for name, t in ema_state.items()}
     base_model.load_state_dict(avg_state, strict=True)
+    if args.mlp_activation == "asqu":
+        log_asqu_beta_diagnostics(base_model, log0)
     torch.cuda.synchronize()
     t_diag = time.perf_counter()
-    diag_val_loss, diag_val_bpb = eval_val(
+    ema_val_loss, ema_val_bpb = eval_val(
         args, compiled_model, rank, world_size, device, grad_accum_steps,
         val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
     )
     torch.cuda.synchronize()
     log0(
-        f"DIAGNOSTIC post_ema val_loss:{diag_val_loss:.4f} val_bpb:{diag_val_bpb:.4f} "
+        f"DIAGNOSTIC post_ema val_loss:{ema_val_loss:.4f} val_bpb:{ema_val_bpb:.4f} "
         f"eval_time:{1000.0 * (time.perf_counter() - t_diag):.0f}ms"
     )
+    # Evaluate SWA if available, pick best averaging strategy
+    best_avg = "ema"
+    diag_val_loss, diag_val_bpb = ema_val_loss, ema_val_bpb
+    if swa_state is not None and swa_count > 0:
+        swa_avg = {name: (t / swa_count).to(dtype=current_state[name].dtype) for name, t in swa_state.items()}
+        base_model.load_state_dict(swa_avg, strict=True)
+        torch.cuda.synchronize()
+        t_swa = time.perf_counter()
+        swa_val_loss, swa_val_bpb = eval_val(
+            args, compiled_model, rank, world_size, device, grad_accum_steps,
+            val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+        )
+        torch.cuda.synchronize()
+        log0(
+            f"DIAGNOSTIC post_swa val_loss:{swa_val_loss:.4f} val_bpb:{swa_val_bpb:.4f} "
+            f"swa_count:{swa_count} eval_time:{1000.0 * (time.perf_counter() - t_swa):.0f}ms"
+        )
+        if swa_val_bpb < ema_val_bpb:
+            best_avg = "swa"
+            diag_val_loss, diag_val_bpb = swa_val_loss, swa_val_bpb
+            log0(f"avg_selection:swa (swa {swa_val_bpb:.4f} < ema {ema_val_bpb:.4f})")
+        else:
+            base_model.load_state_dict(avg_state, strict=True)
+            log0(f"avg_selection:ema (ema {ema_val_bpb:.4f} <= swa {swa_val_bpb:.4f})")
+    # Also check raw final weights (no averaging)
+    raw_state_gpu = {name: t.to(dtype=current_state[name].dtype, device=device) for name, t in final_state.items()}
+    base_model.load_state_dict(raw_state_gpu, strict=True)
+    torch.cuda.synchronize()
+    t_raw = time.perf_counter()
+    raw_val_loss, raw_val_bpb = eval_val(
+        args, compiled_model, rank, world_size, device, grad_accum_steps,
+        val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+    )
+    torch.cuda.synchronize()
+    log0(
+        f"DIAGNOSTIC post_raw val_loss:{raw_val_loss:.4f} val_bpb:{raw_val_bpb:.4f} "
+        f"eval_time:{1000.0 * (time.perf_counter() - t_raw):.0f}ms"
+    )
+    if raw_val_bpb < diag_val_bpb:
+        prev_best_bpb = diag_val_bpb
+        best_avg = "raw"
+        diag_val_loss, diag_val_bpb = raw_val_loss, raw_val_bpb
+        log0(f"avg_selection:raw (raw {raw_val_bpb:.4f} < {prev_best_bpb:.4f})")
+    else:
+        # Reload the best averaging strategy
+        if best_avg == "ema":
+            base_model.load_state_dict(avg_state, strict=True)
+        elif best_avg == "swa" and swa_state is not None and swa_count > 0:
+            swa_avg = {name: (t / swa_count).to(dtype=current_state[name].dtype) for name, t in swa_state.items()}
+            base_model.load_state_dict(swa_avg, strict=True)
+        log0(f"avg_selection:keeping {best_avg}")
+    log0(f"BEST_AVG:{best_avg} val_bpb:{diag_val_bpb:.4f}")
     full_state_dict = base_model.state_dict()
     export_sd = {k: v for k, v in full_state_dict.items() if "mtp_heads" not in k}
     excluded_mtp = sum(int(t.numel()) for k, t in full_state_dict.items() if "mtp_heads" in k)
@@ -1379,7 +1492,7 @@ def main() -> None:
         log0(f"Serialized model: {model_bytes} bytes")
         log0(f"Code size: {code_bytes} bytes")
     sd_cpu = {k: v.detach().cpu() for k, v in export_sd.items()}
-    quant_result, quant_meta = mixed_quantize_int6(sd_cpu, {"mlp", "attn"})
+    quant_result, quant_meta = mixed_quantize_int6(sd_cpu, {"mlp", "attn"}, log_fn=log0)
     quant_buf = io.BytesIO()
     torch.save({"w": quant_result, "m": quant_meta}, quant_buf)
     quant_raw = quant_buf.getvalue()
@@ -1410,7 +1523,8 @@ def main() -> None:
         bigram_vocab_size=args.bigram_vocab_size, bigram_dim=args.bigram_dim,
         xsa_last_n=args.xsa_last_n,  # must match training model
         rope_dims=args.rope_dims, ln_scale=args.ln_scale, dtg=args.dtg_enabled,
-        mlp_activation=args.mlp_activation, mlp_leaky_slope=args.mlp_leaky_slope, asqu_beta_init=args.asqu_beta_init,
+        mlp_activation=args.mlp_activation, mlp_leaky_slope=args.mlp_leaky_slope,
+        asqu_beta_init=args.asqu_beta_init, asqu_sigmoid_beta=args.asqu_sigmoid_beta,
         ve_enabled=args.ve_enabled, ve_dim=args.ve_dim, ve_layers=args.ve_layers,
     ).to(device).bfloat16()
     for m in eval_model.modules():

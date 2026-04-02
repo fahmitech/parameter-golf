@@ -1,0 +1,9 @@
+{
+  "name": "11L BigramHash + XSA-all + VE + Full GPTQ + Causal Expert Overlay (FA3)",
+  "val_bpb": null,
+  "bytes_total": null,
+  "blurb": "11-layer 512d GQA mainline with BigramHash embeddings, XSA on all layers, shared VE reinjection, SmearGate, U-Net skips, full-Hessian GPTQ int6, and a prefix-only causal expert overlay. FA3 runtime path with metrics still pending verification on this fork.",
+  "author": "fahmitech",
+  "github_id": "fahmitech",
+  "date": "2026-03-31"
+}

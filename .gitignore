@@ -11,3 +11,4 @@ data/docs_selected.jsonl
 logs/
 improvement_plan.md
 records/**/LOCAL_RESULT_*.md
+records/**/PR_DRAFT.md

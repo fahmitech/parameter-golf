@@ -1,0 +1,10 @@
+{
+  "author": "fahmitech",
+  "github_id": "fahmitech",
+  "name": "11L XSA4 + Partial RoPE + LN Scale + VE128 + LeakyReLU2 + EMA + GPTQ-lite",
+  "blurb": "Differentiated follow-on candidate built from the proven March 22 11-layer FA3 mainline. This variant keeps the March 22 stack intact while switching the MLP activation to LeakyReLU(0.5)^2, a low-cost change with positive evidence from neighboring 8xH100 logs in the same family. Fresh metrics pending rerun on this fork.",
+  "date": "2026-04-02",
+  "val_loss": null,
+  "val_bpb": null,
+  "bytes_total": null
+}

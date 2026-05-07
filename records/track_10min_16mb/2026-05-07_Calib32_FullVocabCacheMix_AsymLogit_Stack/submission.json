@@ -1,0 +1,9 @@
+{
+  "name": "Calib32 Full-Vocab Cache Mix + AsymLogit Stack",
+  "val_bpb": null,
+  "bytes_total": null,
+  "blurb": "FA3/XSA/GPTQ stack with trained asymmetric softcaps and a legal score-first causal compression arbiter: p_final=(1-lambda)p_model+lambda q_arbiter over prefix-grown n-gram and recency experts, then TTT updates only after each chunk is scored. Score pending 8xH100 verification.",
+  "author": "fahmitech",
+  "github_id": "fahmitech",
+  "date": "2026-05-07"
+}
